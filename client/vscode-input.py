@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""CLI VS Code Input Client
+
+Discovers the locally running VS Code extension server started by
+the "CLI VS Code Input" extension and issues dialog requests.
+
+Usage:
+    python vscode-input.py quickpick "Title" "Placeholder" Opt1 Opt2 Opt3
+    python vscode-input.py input "Title" "Prompt" [default]
+    python vscode-input.py health
+    echo '{"command":"showQuickPick","data":{"items":["A","B"]}}' | python vscode-input.py --stdin-json
+
+Flags:
+    --stdin-json    Read JSON request from stdin (bypasses shell escaping)
+    --json          Output results as JSON instead of plain text
+
+Exit codes:
+    0  success with a user-provided value
+    1  usage / argument error
+    2  health: no server discovered
+    3  health: server responded non-200
+    4  health: network error
+    10 quickpick cancelled by user
+    11 input cancelled by user
+
+Environment:
+    VSCODE_CLI_INPUT_DIR     Optional override directory containing server info JSON files.
+    VSCODE_CLI_INPUT_EXT_ID  Override the extension identifier directory (<publisher>.<name>).
+    VSCODE_CLI_INPUT_DEBUG   If set, prints discovery diagnostics to stderr.
+"""
+import json
+import os
+import sys
+import time
+import http.client
+from pathlib import Path
+
+SERVER_PREFIX = 'vscode-cli-input-server-'
+
+def derive_ext_id_dir() -> str:
+    """Derive the extension id directory (<publisher>.<extension>) dynamically.
+
+    Priority:
+      1. Environment variable VSCODE_CLI_INPUT_EXT_ID
+      2. Script path: locate 'globalStorage/<extId>' segment
+    """
+    env = os.getenv('VSCODE_CLI_INPUT_EXT_ID')
+    if env:
+        return env.strip()
+    p = Path(__file__).resolve()
+    parts = p.parts
+    for i, part in enumerate(parts):
+        if part == 'globalStorage' and i + 1 < len(parts):
+            return parts[i + 1]
+    raise Exception("Not found EXT_ID_DIR in path")
+
+EXT_ID_DIR = derive_ext_id_dir()
+
+def vscode_env() -> bool:
+    # Heuristic: TERM_PROGRAM=vscode or any VSCODE_* variable present
+    if os.environ.get('TERM_PROGRAM') == 'vscode':
+        return True
+    return any(k.startswith('VSCODE_') for k in os.environ.keys())
+
+def candidate_base_dirs() -> list[Path]:
+    bases: list[Path] = []
+    override = os.environ.get('VSCODE_CLI_INPUT_DIR')
+    if override and Path(override).is_dir():
+        bases.append(Path(override))
+    home = Path.home()
+    ext = EXT_ID_DIR
+    guesses = [
+        home / '.config' / 'Code' / 'User' / 'globalStorage' / ext,
+        home / '.config' / 'Code - Insiders' / 'User' / 'globalStorage' / ext,
+        home / '.config' / 'VSCodium' / 'User' / 'globalStorage' / ext,
+        home / '.vscode-server' / 'data' / 'User' / 'globalStorage' / ext,
+        home / '.vscode-server-insiders' / 'data' / 'User' / 'globalStorage' / ext,
+        home / '.vscode-remote' / 'data' / 'User' / 'globalStorage' / ext,
+    ]
+    for g in guesses:
+        if g.is_dir():
+            bases.append(g)
+    return bases
+
+def debug(msg: str):
+    if os.environ.get('VSCODE_CLI_INPUT_DEBUG'):
+        sys.stderr.write(f"[debug] {msg}\n")
+
+
+def list_servers() -> list[tuple[Path, dict]]:
+    servers: list[tuple[Path, dict]] = []
+    now = time.time() * 1000
+    for base in candidate_base_dirs():
+        for f in base.glob(f'{SERVER_PREFIX}*.json'):
+            try:
+                data = json.loads(f.read_text())
+                # Basic validation
+                if 'port' in data and 'token' in data and 'timestamp' in data:
+                    # Skip stale (>6 min) or dead pid (best effort)
+                    age = now - data.get('timestamp', 0)
+                    if age > 6 * 60 * 1000:
+                        continue
+                    servers.append((f, data))
+            except Exception as e:
+                debug(f"Parse error {f}: {e}")
+    return servers
+
+def pick_best_server(cwd: Path) -> tuple[Path, dict] | tuple[None, None]:
+    servers = list_servers()
+    if not servers:
+        return None, None
+    best: tuple[Path, dict] | None = None
+    best_len = -1
+    for f, data in servers:
+        roots = data.get('roots') or [data.get('workspace')] if data.get('workspace') else []
+        for r in roots:
+            if r and str(cwd).startswith(r) and len(r) > best_len:
+                best = (f, data)
+                best_len = len(r)
+    return best if best else servers[0]
+
+def find_server_file():
+    cwd = Path.cwd()
+    f, data = pick_best_server(cwd)
+    debug(f"Discovered {('no' if not data else 'a')} server (best match length) for cwd={cwd}")
+    return f, data
+
+
+def call_server(command: str, data: dict):
+    fpath, info = find_server_file()
+    if not info:
+        if not vscode_env():
+            raise RuntimeError('Not in a VS Code environment and no server found.')
+        raise RuntimeError('VS Code environment detected but server not found (Is extension installed?).')
+    conn = http.client.HTTPConnection('127.0.0.1', info['port'], timeout=30)
+    payload = json.dumps({'command': command, 'data': data})
+    headers = {'Content-Type': 'application/json', 'X-Auth-Token': info['token']}
+    conn.request('POST', '/request', body=payload, headers=headers)
+    resp = conn.getresponse()
+    body = resp.read().decode('utf-8')
+    if resp.status != 200:
+        raise RuntimeError(f'Server returned {resp.status}: {body}')
+    try:
+        parsed = json.loads(body)
+    except Exception as e:
+        raise RuntimeError(f'Malformed JSON response: {e}: {body}')
+    # Treat absence of result key as cancellation (align with null result semantics)
+    if 'result' not in parsed:
+        debug(f"No 'result' key in response, treating as cancellation: {parsed}")
+        return None
+    return parsed.get('result', None)
+
+
+def main(argv):
+    if len(argv) < 2:
+        print(__doc__)
+        debug(f"Derived EXT_ID_DIR={EXT_ID_DIR}")
+        return 1
+    
+    # Check for flags
+    json_output = '--json' in argv
+    stdin_mode = '--stdin-json' in argv
+    
+    # Remove flags from argv for normal processing
+    argv = [a for a in argv if a not in ('--json', '--stdin-json')]
+    
+    # Stdin JSON mode: read entire request from stdin
+    if stdin_mode:
+        try:
+            stdin_data = sys.stdin.read()
+            payload = json.loads(stdin_data)
+            command = payload.get('command', '')
+            data = payload.get('data', {})
+            if not command:
+                print(json.dumps({'error': 'Missing command in JSON'}) if json_output else 'ERROR: Missing command')
+                return 1
+            result = call_server(command, data)
+            if json_output:
+                print(json.dumps({'result': result, 'cancelled': result is None}))
+            else:
+                if result is None:
+                    print(f'CANCELLED: {command}')
+                    return 10
+                print(result if result is not None else '')
+            return 0
+        except json.JSONDecodeError as e:
+            print(json.dumps({'error': f'Invalid JSON: {e}'}) if json_output else f'ERROR: Invalid JSON: {e}')
+            return 1
+        except Exception as e:
+            print(json.dumps({'error': str(e)}) if json_output else f'ERROR: {e}')
+            return 1
+    
+    # Normal positional argument mode
+    if len(argv) < 2:
+        print(__doc__)
+        return 1
+    
+    action = argv[1]
+    if action == 'health':
+        f, info = find_server_file()
+        if not info:
+            print('NO_SERVER')
+            return 2
+        try:
+            conn = http.client.HTTPConnection('127.0.0.1', info['port'], timeout=5)
+            conn.request('GET', '/health')
+            resp = conn.getresponse()
+            if resp.status == 200:
+                print('OK')
+                return 0
+            print(f'BAD_STATUS:{resp.status}')
+            return 3
+        except Exception as e:
+            print(f'ERROR:{e}')
+            return 4
+    if action == 'quickpick':
+        if len(argv) < 5:
+            print('Usage: example_client.py quickpick "Title" "PlaceHolder" Option1 Option2 ...')
+            return 1
+        title = argv[2]
+        placeholder = argv[3]
+        items = argv[4:]
+        selection = call_server('showQuickPick', {'items': items, 'options': {'title': title, 'placeHolder': placeholder}})
+        if json_output:
+            print(json.dumps({'result': selection, 'cancelled': selection is None}))
+        else:
+            if selection is None:
+                print('CANCELLED: quickpick')
+                debug('User cancelled quick pick')
+                return 10
+            print(selection)
+        return 0
+    elif action == 'input':
+        if len(argv) < 4:
+            print('Usage: example_client.py input "Title" "Prompt" [default]')
+            return 1
+        title = argv[2]
+        prompt = argv[3]
+        default = argv[4] if len(argv) > 4 else ''
+        value = call_server('showInputBox', {'options': {'title': title, 'prompt': prompt, 'value': default}})
+        if json_output:
+            print(json.dumps({'result': value, 'cancelled': value is None}))
+        else:
+            if value is None:
+                print('CANCELLED: input')
+                debug('User cancelled input box')
+                return 11
+            print(value)
+        return 0
+    else:
+        print(f'Unknown action: {action}')
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

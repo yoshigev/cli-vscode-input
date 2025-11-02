@@ -1,0 +1,48 @@
+{
+  "name": "cli-vscode-input",
+  "publisher": "yoshigev",
+  "displayName": "CLI VS Code Input",
+  "description": "Expose VS Code UI prompts (QuickPick/InputBox) to external CLI tools via a lightweight local HTTP server.",
+  "version": "0.3.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cliVscodeInput.showQuickPick",
+        "title": "CLI VS Code: Show Quick Pick"
+      },
+      {
+        "command": "cliVscodeInput.showInputBox",
+        "title": "CLI VS Code: Show Input Box"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "prepublish": "npm run build",
+    "lint": "eslint 'src/**/*.ts'",
+    "package": "npm run build && npx vsce package",
+    "reinstall": "bash ./reinstall-extension.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yoshigev/cli-vscode-input.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "16.x",
+    "typescript": "^5.4.0",
+    "eslint": "^8.41.0",
+    "typescript-eslint": "^8.44.1"
+  }
+}

@@ -1,0 +1,82 @@
+name: Publish Extension
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Automated Version Bump
+        id: bump_version
+        uses: phips28/gh-action-bump-version@master
+        with:
+          tag-prefix: "v"
+          commit-message: "[auto] Bump version to {{version}} [skip ci]"
+          default: patch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get new version
+        id: get_version
+        run: |
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+
+      - name: Package extension
+        run: vsce package
+
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: vsce publish -p $VSCE_PAT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.get_version.outputs.version }}
+          name: Release v${{ steps.get_version.outputs.version }}
+          body: |
+            Automated release of version ${{ steps.get_version.outputs.version }}
+
+            ## Installation
+            Download the VSIX file and install it in VS Code:
+            ```bash
+            code --install-extension cli-vscode-input-${{ steps.get_version.outputs.version }}.vsix
+            ```
+
+            Or install directly from the marketplace:
+            ```bash
+            code --install-extension yoshigev.cli-vscode-input
+            ```
+          files: |
+            ./cli-vscode-input-${{ steps.get_version.outputs.version }}.vsix
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
