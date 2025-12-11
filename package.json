@@ -3,7 +3,7 @@
   "publisher": "yoshigev",
   "displayName": "CLI VS Code Input",
   "description": "Expose VS Code UI prompts (QuickPick/InputBox) to external CLI tools via a lightweight local HTTP server.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "engines": {
     "vscode": "^1.106.0"
   },
