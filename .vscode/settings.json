@@ -1,10 +1,7 @@
 {
     "files.exclude": {
         "**/.git": true,
-        "**/.DS_Store": true,
-        "**/node_modules": true,
-        "**/dist": true,
-        "**/*.vsix": true
+        "**/.DS_Store": true
     },
     "search.exclude": {
         "**/node_modules": true,
