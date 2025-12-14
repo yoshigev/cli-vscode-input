@@ -1,7 +1,7 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as http from 'http';
-import * as crypto from 'crypto';
+import vscode from 'vscode';
+import fs from 'fs';
+import http from 'http';
+import crypto from 'crypto';
 
 const SERVER_FILE_PREFIX = 'vscode-cli-input-server';
 const STALE_AGE_MS = 5 * 60 * 1000; // 5 minutes
@@ -16,14 +16,28 @@ interface ServerInfoRecord {
   pid: number;
 }
 
-type RequestPayload = {
-  command?: string;
-  data?: unknown;
+interface QuickPickPayload {
+  command: 'showQuickPick';
+  data: {
+    items: readonly string[];
+    options?: vscode.QuickPickOptions
+  };
+};
+interface InputBoxPayload {
+  command: 'showInputBox';
+  data: {
+    options?: vscode.InputBoxOptions
+  };
+};
+interface MessagePayload {
+  command: 'showMessage';
+  data: {
+    message: string;
+    items?: string[]
+  };
 };
 
-type QuickPickPayload = { items: readonly string[]; options?: vscode.QuickPickOptions };
-type InputBoxPayload = { options?: vscode.InputBoxOptions };
-type MessagePayload = { message: string; items?: string[] };
+type RequestPayload = QuickPickPayload | InputBoxPayload | MessagePayload;
 
 function sanitizePath(p: string): string {
   return p.replace(/[^a-zA-Z0-9_.-]/g, '_');
@@ -121,30 +135,27 @@ function startHttpServer(context: vscode.ExtensionContext): Promise<{ server: ht
           req.on('data', chunk => body += chunk);
           req.on('end', () => {
             (async () => {
-              let parsed: unknown;
+              let payload: RequestPayload;
               try {
-                parsed = body ? JSON.parse(body) : {};
+                payload = body ? JSON.parse(body) : {};
               } catch {
                 res.writeHead(400); res.end('invalid json'); return;
               }
-              const payload = parsed as RequestPayload;
-              const command = typeof payload.command === 'string' ? payload.command : '';
-              const data = payload.data;
               let result: unknown = null;
-              switch (command) {
+              switch (payload.command) {
                 case 'showQuickPick': {
-                  const qp = data as QuickPickPayload;
+                  const qp = payload.data;
                   if (!qp || !Array.isArray(qp.items)) { res.writeHead(400); res.end('invalid quickpick payload'); return; }
                   result = await vscode.window.showQuickPick(qp.items, qp.options || {});
                   break;
                 }
                 case 'showInputBox': {
-                  const ib = data as InputBoxPayload;
+                  const ib = payload.data;
                   result = await vscode.window.showInputBox(ib && ib.options ? ib.options : {});
                   break;
                 }
                 case 'showMessage': {
-                  const msg = data as MessagePayload;
+                  const msg = payload.data;
                   if (!msg || typeof msg.message !== 'string') { res.writeHead(400); res.end('invalid message payload'); return; }
                   await vscode.window.showInformationMessage(msg.message, ...(msg.items || []));
                   result = { ok: true };
