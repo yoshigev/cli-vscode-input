@@ -135,11 +135,18 @@ function startHttpServer(context: vscode.ExtensionContext): Promise<{ server: ht
           req.on('data', chunk => body += chunk);
           req.on('end', () => {
             (async () => {
+              if (!body) {
+                res.writeHead(400);
+                res.end('missing body');
+                return;
+              }
               let payload: RequestPayload;
               try {
-                payload = body ? JSON.parse(body) : {};
+                payload = JSON.parse(body) as RequestPayload;
               } catch {
-                res.writeHead(400); res.end('invalid json'); return;
+                res.writeHead(400);
+                res.end('invalid json');
+                return;
               }
               let result: unknown = null;
               switch (payload.command) {

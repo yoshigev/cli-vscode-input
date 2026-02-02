@@ -39,10 +39,12 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "@types/vscode": "^1.106.0",
+    "@stylistic/eslint-plugin": "^5.7.1",
     "@types/node": "22.x",
-    "typescript": "^5.9.3",
+    "@types/vscode": "^1.106.0",
     "eslint": "^9.39.1",
+    "eslint-plugin-require-extensions": "^0.1.3",
+    "typescript": "^5.9.3",
     "typescript-eslint": "^8.49.0"
   }
 }
