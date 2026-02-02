@@ -49,16 +49,13 @@ jobs:
       - name: Build extension
         run: npm run build
 
-      - name: Install vsce
-        run: npm install -g @vscode/vsce
-
       - name: Package extension
-        run: vsce package
+        run: npx -y -p @vscode/vsce vsce package
 
       - name: Publish to VS Code Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: vsce publish -p $VSCE_PAT
+        run: npx -y -p @vscode/vsce vsce publish -p $VSCE_PAT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
