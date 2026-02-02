@@ -27,7 +27,7 @@
     ]
   },
   "scripts": {
-    "build": "tsc -p .",
+    "build": "rimraf dist && tsc -p .",
     "prepublish": "npm run build",
     "lint": "eslint 'src/**/*.ts'",
     "package": "npm run build && npx vsce package",
@@ -44,7 +44,14 @@
     "@types/vscode": "^1.106.0",
     "eslint": "^9.39.1",
     "eslint-plugin-require-extensions": "^0.1.3",
+    "rimraf": "^6.1.2",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.49.0"
-  }
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist/",
+    "client/"
+  ]
 }
