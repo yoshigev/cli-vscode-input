@@ -33,6 +33,8 @@ import os
 import sys
 import time
 import http.client
+import subprocess
+import platform
 from pathlib import Path
 
 SERVER_PREFIX = 'vscode-cli-input-server-'
@@ -87,6 +89,69 @@ def debug(msg: str):
         sys.stderr.write(f"[debug] {msg}\n")
 
 
+def get_vscode_pid() -> int | None:
+    """Get the PID of the VS Code instance by using VSCODE_GIT_IPC_HANDLE.
+    
+    Returns:
+        The PID of the VS Code process, or None if not found.
+    """
+    ipc_handle = os.environ.get('VSCODE_GIT_IPC_HANDLE')
+    if not ipc_handle:
+        debug("VSCODE_GIT_IPC_HANDLE not set")
+        return None
+    
+    debug(f"VSCODE_GIT_IPC_HANDLE={ipc_handle}")
+    
+    try:
+        if platform.system() == 'Windows':
+            # On Windows, we can try to parse the handle and find the process
+            # The handle format on Windows is typically: \\.\pipe\<name>-<pid>-...
+            # We'll try to extract PID from the pipe name if possible
+            import re
+            match = re.search(r'-(\d+)-', ipc_handle)
+            if match:
+                pid = int(match.group(1))
+                debug(f"Extracted PID {pid} from pipe name")
+                return pid
+            else:
+                debug("Could not extract PID from Windows pipe name")
+                return None
+        else:
+            # On Unix-like systems (Linux, macOS), use fuser
+            result = subprocess.run(
+                ['fuser', ipc_handle],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            # fuser output format can be: /path/to/socket: 12345 or just 12345
+            output = result.stdout.strip()
+            debug(f"fuser output: {output}")
+            
+            if not output:
+                debug("Empty fuser output")
+                return None
+            
+            # Try to extract PID - handles both "path: PID" and just "PID"
+            pid_str = output.split(':')[-1].strip() if ':' in output else output
+            try:
+                pid = int(pid_str)
+                debug(f"Extracted PID {pid} from fuser")
+                return pid
+            except ValueError:
+                debug(f"Could not parse PID from fuser output: {output}")
+                return None
+    except FileNotFoundError:
+        debug("fuser command not found (install psmisc package)")
+        return None
+    except subprocess.TimeoutExpired:
+        debug("fuser command timed out")
+        return None
+    except Exception as e:
+        debug(f"Error getting VS Code PID: {e}")
+        return None
+
+
 def list_servers() -> list[tuple[Path, dict]]:
     servers: list[tuple[Path, dict]] = []
     now = time.time() * 1000
@@ -96,7 +161,7 @@ def list_servers() -> list[tuple[Path, dict]]:
                 data = json.loads(f.read_text())
                 # Basic validation
                 if 'port' in data and 'token' in data and 'timestamp' in data:
-                    # Skip stale (>6 min) or dead pid (best effort)
+                    # Skip stale (>6 min)
                     age = now - data.get('timestamp', 0)
                     if age > 6 * 60 * 1000:
                         continue
@@ -105,29 +170,31 @@ def list_servers() -> list[tuple[Path, dict]]:
                 debug(f"Parse error {f}: {e}")
     return servers
 
-def pick_best_server(cwd: Path) -> tuple[Path, dict] | tuple[None, None]:
+def find_server_by_pid() -> tuple[Path, dict] | tuple[None, None]:
+    """Find the server by matching PID with the current VS Code instance."""
     servers = list_servers()
     if not servers:
+        debug("No servers found")
         return None, None
-    best: tuple[Path, dict] | None = None
-    best_len = -1
+    
+    vscode_pid = get_vscode_pid()
+    if not vscode_pid:
+        debug("Could not determine VS Code PID")
+        return None, None
+    
+    debug(f"Looking for server with PID {vscode_pid}")
     for f, data in servers:
-        roots = data.get('roots') or [data.get('workspace')] if data.get('workspace') else []
-        for r in roots:
-            if r and str(cwd).startswith(r) and len(r) > best_len:
-                best = (f, data)
-                best_len = len(r)
-    return best if best else servers[0]
-
-def find_server_file():
-    cwd = Path.cwd()
-    f, data = pick_best_server(cwd)
-    debug(f"Discovered {('no' if not data else 'a')} server (best match length) for cwd={cwd}")
-    return f, data
+        server_pid = data.get('pid')
+        if server_pid == vscode_pid:
+            debug(f"Discovered server (by PID match): port={data.get('port')}, pid={data.get('pid')}, workspace={data.get('workspace')}, file={f}")
+            return f, data
+    
+    debug(f"No server found with matching PID {vscode_pid}")
+    return None, None
 
 
 def call_server(command: str, data: dict):
-    fpath, info = find_server_file()
+    fpath, info = find_server_by_pid()
     if not info:
         if not vscode_env():
             raise RuntimeError('Not in a VS Code environment and no server found.')
@@ -197,7 +264,7 @@ def main(argv):
     
     action = argv[1]
     if action == 'health':
-        f, info = find_server_file()
+        f, info = find_server_by_pid()
         if not info:
             print('NO_SERVER')
             return 2
