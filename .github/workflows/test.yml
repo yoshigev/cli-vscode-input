@@ -17,9 +17,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "18"
+          node-version: "24"
           cache: "npm"
 
       - name: Install dependencies
@@ -31,8 +31,5 @@ jobs:
       - name: Build extension
         run: npm run build
 
-      - name: Install vsce
-        run: npm install -g @vscode/vsce
-
       - name: Package extension
-        run: vsce package
+        run: npx -y -p @vscode/vsce vsce package
