@@ -89,6 +89,46 @@ def debug(msg: str):
         sys.stderr.write(f"[debug] {msg}\n")
 
 
+def _get_pipe_server_pid_windows(pipe_path: str) -> int | None:
+    """Return the server-side PID of a Windows named pipe using GetNamedPipeServerProcessId.
+
+    No external tools required — pure ctypes/Win32 API.
+    """
+    import ctypes
+    import ctypes.wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    GENERIC_READ     = 0x80000000
+    FILE_SHARE_READ  = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    OPEN_EXISTING    = 3
+    INVALID_HANDLE   = ctypes.c_void_p(-1).value
+
+    handle = kernel32.CreateFileW(
+        pipe_path,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle == INVALID_HANDLE or handle == 0:
+        debug(f"CreateFileW failed (error {kernel32.GetLastError()})")
+        return None
+    try:
+        server_pid = ctypes.wintypes.DWORD(0)
+        ok = kernel32.GetNamedPipeServerProcessId(handle, ctypes.byref(server_pid))
+        if not ok:
+            debug(f"GetNamedPipeServerProcessId failed (error {kernel32.GetLastError()})")
+            return None
+        pid = server_pid.value
+        debug(f"GetNamedPipeServerProcessId returned PID {pid}")
+        return pid
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def get_vscode_pid() -> int | None:
     """Get the PID of the VS Code instance by using VSCODE_GIT_IPC_HANDLE.
     
@@ -99,23 +139,15 @@ def get_vscode_pid() -> int | None:
     if not ipc_handle:
         debug("VSCODE_GIT_IPC_HANDLE not set")
         return None
-    
+    ipc_handle = ipc_handle.strip()
+    if not ipc_handle:
+        debug("VSCODE_GIT_IPC_HANDLE is empty")
+        return None
     debug(f"VSCODE_GIT_IPC_HANDLE={ipc_handle}")
     
     try:
         if platform.system() == 'Windows':
-            # On Windows, we can try to parse the handle and find the process
-            # The handle format on Windows is typically: \\.\pipe\<name>-<pid>-...
-            # We'll try to extract PID from the pipe name if possible
-            import re
-            match = re.search(r'-(\d+)-', ipc_handle)
-            if match:
-                pid = int(match.group(1))
-                debug(f"Extracted PID {pid} from pipe name")
-                return pid
-            else:
-                debug("Could not extract PID from Windows pipe name")
-                return None
+            return _get_pipe_server_pid_windows(ipc_handle)
         else:
             # On Unix-like systems (Linux, macOS), use fuser
             result = subprocess.run(
@@ -176,7 +208,7 @@ def find_server_by_pid() -> tuple[Path, dict] | tuple[None, None]:
     if not servers:
         debug("No servers found")
         return None, None
-    
+
     vscode_pid = get_vscode_pid()
     if not vscode_pid:
         debug("Could not determine VS Code PID")
