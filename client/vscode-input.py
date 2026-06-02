@@ -79,6 +79,10 @@ def candidate_base_dirs() -> list[Path]:
         home / '.vscode-server-insiders' / 'data' / 'User' / 'globalStorage' / ext,
         home / '.vscode-remote' / 'data' / 'User' / 'globalStorage' / ext,
     ]
+    appdata = os.environ.get('APPDATA')
+    if appdata:
+        guesses.append(Path(appdata) / 'Code' / 'User' / 'globalStorage' / ext)
+
     for g in guesses:
         if g.is_dir():
             bases.append(g)
