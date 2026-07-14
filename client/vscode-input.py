@@ -24,8 +24,8 @@ Exit codes:
     11 input cancelled by user
 
 Environment:
-    VSCODE_CLI_INPUT_DIR     Optional override directory containing server info JSON files.
-    VSCODE_CLI_INPUT_EXT_ID  Override the extension identifier directory (<publisher>.<name>).
+    VSCODE_CLI_INPUT_DIR     Optional override directory containing server info JSON files
+                             (defaults to the script's own directory).
     VSCODE_CLI_INPUT_DEBUG   If set, prints discovery diagnostics to stderr.
 """
 import json
@@ -39,54 +39,17 @@ from pathlib import Path
 
 SERVER_PREFIX = 'vscode-cli-input-server-'
 
-def derive_ext_id_dir() -> str:
-    """Derive the extension id directory (<publisher>.<extension>) dynamically.
-
-    Priority:
-      1. Environment variable VSCODE_CLI_INPUT_EXT_ID
-      2. Script path: locate 'globalStorage/<extId>' segment
-    """
-    env = os.getenv('VSCODE_CLI_INPUT_EXT_ID')
-    if env:
-        return env.strip()
-    p = Path(__file__).resolve()
-    parts = p.parts
-    for i, part in enumerate(parts):
-        if part == 'globalStorage' and i + 1 < len(parts):
-            return parts[i + 1]
-    raise Exception("Not found EXT_ID_DIR in path")
-
-EXT_ID_DIR = derive_ext_id_dir()
-
 def vscode_env() -> bool:
     # Heuristic: TERM_PROGRAM=vscode or any VSCODE_* variable present
     if os.environ.get('TERM_PROGRAM') == 'vscode':
         return True
     return any(k.startswith('VSCODE_') for k in os.environ.keys())
 
-def candidate_base_dirs() -> list[Path]:
-    bases: list[Path] = []
+def base_dir() -> Path:
     override = os.environ.get('VSCODE_CLI_INPUT_DIR')
     if override and Path(override).is_dir():
-        bases.append(Path(override))
-    home = Path.home()
-    ext = EXT_ID_DIR
-    guesses = [
-        home / '.config' / 'Code' / 'User' / 'globalStorage' / ext,
-        home / '.config' / 'Code - Insiders' / 'User' / 'globalStorage' / ext,
-        home / '.config' / 'VSCodium' / 'User' / 'globalStorage' / ext,
-        home / '.vscode-server' / 'data' / 'User' / 'globalStorage' / ext,
-        home / '.vscode-server-insiders' / 'data' / 'User' / 'globalStorage' / ext,
-        home / '.vscode-remote' / 'data' / 'User' / 'globalStorage' / ext,
-    ]
-    appdata = os.environ.get('APPDATA')
-    if appdata:
-        guesses.append(Path(appdata) / 'Code' / 'User' / 'globalStorage' / ext)
-
-    for g in guesses:
-        if g.is_dir():
-            bases.append(g)
-    return bases
+        return Path(override)
+    return Path(__file__).resolve().parent
 
 def debug(msg: str):
     if os.environ.get('VSCODE_CLI_INPUT_DEBUG'):
@@ -139,9 +102,9 @@ def get_vscode_pid() -> int | None:
     Returns:
         The PID of the VS Code process, or None if not found.
     """
-    ipc_handle = os.environ.get('VSCODE_GIT_IPC_HANDLE')
+    ipc_handle = os.environ.get('VSCODE_GIT_IPC_HANDLE') or os.environ.get('VSCODE_IPC_HOOK_CLI')
     if not ipc_handle:
-        debug("VSCODE_GIT_IPC_HANDLE not set")
+        debug("VSCODE_GIT_IPC_HANDLE and VSCODE_IPC_HOOK_CLI are not set")
         return None
     ipc_handle = ipc_handle.strip()
     if not ipc_handle:
@@ -191,19 +154,18 @@ def get_vscode_pid() -> int | None:
 def list_servers() -> list[tuple[Path, dict]]:
     servers: list[tuple[Path, dict]] = []
     now = time.time() * 1000
-    for base in candidate_base_dirs():
-        for f in base.glob(f'{SERVER_PREFIX}*.json'):
-            try:
-                data = json.loads(f.read_text())
-                # Basic validation
-                if 'port' in data and 'token' in data and 'timestamp' in data:
-                    # Skip stale (>6 min)
-                    age = now - data.get('timestamp', 0)
-                    if age > 6 * 60 * 1000:
-                        continue
-                    servers.append((f, data))
-            except Exception as e:
-                debug(f"Parse error {f}: {e}")
+    for f in base_dir().glob(f'{SERVER_PREFIX}*.json'):
+        try:
+            data = json.loads(f.read_text())
+            # Basic validation
+            if 'port' in data and 'token' in data and 'timestamp' in data:
+                # Skip stale (>6 min)
+                age = now - data.get('timestamp', 0)
+                if age > 6 * 60 * 1000:
+                    continue
+                servers.append((f, data))
+        except Exception as e:
+            debug(f"Parse error {f}: {e}")
     return servers
 
 def find_server_by_pid() -> tuple[Path, dict] | tuple[None, None]:
@@ -257,7 +219,6 @@ def call_server(command: str, data: dict):
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
-        debug(f"Derived EXT_ID_DIR={EXT_ID_DIR}")
         return 1
     
     # Check for flags
