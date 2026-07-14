@@ -102,9 +102,9 @@ def get_vscode_pid() -> int | None:
     Returns:
         The PID of the VS Code process, or None if not found.
     """
-    ipc_handle = os.environ.get('VSCODE_GIT_IPC_HANDLE')
+    ipc_handle = os.environ.get('VSCODE_GIT_IPC_HANDLE') or os.environ.get('VSCODE_IPC_HOOK_CLI')
     if not ipc_handle:
-        debug("VSCODE_GIT_IPC_HANDLE not set")
+        debug("VSCODE_GIT_IPC_HANDLE and VSCODE_IPC_HOOK_CLI are not set")
         return None
     ipc_handle = ipc_handle.strip()
     if not ipc_handle:
